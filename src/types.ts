@@ -6,6 +6,14 @@ export interface UserProfile {
   createdAt: any;
 }
 
+export interface Chat {
+  id: string;
+  participants: string[];
+  lastMessage?: string;
+  lastMessageTime?: any;
+  createdAt: any;
+}
+
 export interface Message {
   id: string;
   senderId: string;

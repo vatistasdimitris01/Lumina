@@ -31,7 +31,7 @@ import {
 } from 'firebase/storage';
 import { auth, db, storage } from './firebase';
 import { cn } from './lib/utils';
-import { Message, UserProfile } from './types';
+import { Message, UserProfile, Chat } from './types';
 import { 
   ArrowUp, 
   Image as ImageIcon, 
@@ -69,8 +69,12 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [friends, setFriends] = useState<UserProfile[]>([]);
+  const [chats, setChats] = useState<(Chat & { otherUser?: UserProfile })[]>([]);
+  const [activeChatUser, setActiveChatUser] = useState<UserProfile | null>(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [editUsernameInput, setEditUsernameInput] = useState('');
+  const [searchResults, setSearchResults] = useState<{ users: UserProfile[], chats: (Chat & { otherUser?: UserProfile })[] }>({ users: [], chats: [] });
+  const [isSearching, setIsSearching] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -134,10 +138,113 @@ export default function App() {
 
 
   useEffect(() => {
+    if (!user) {
+      setChats([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'chats'),
+      where('participants', 'array-contains', user.uid)
+    );
+
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
+      const chatsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Chat));
+      
+      const chatsWithUsers = await Promise.all(chatsData.map(async (chat) => {
+        const otherUserId = chat.participants.find(id => id !== user.uid);
+        if (otherUserId) {
+          const userDoc = await getDoc(doc(db, 'users', otherUserId));
+          if (userDoc.exists()) {
+            return { ...chat, otherUser: userDoc.data() as UserProfile };
+          }
+        }
+        return chat;
+      }));
+      
+      // Sort by lastMessageTime descending
+      chatsWithUsers.sort((a, b) => {
+        const timeA = a.lastMessageTime?.toMillis?.() || 0;
+        const timeB = b.lastMessageTime?.toMillis?.() || 0;
+        return timeB - timeA;
+      });
+      
+      setChats(chatsWithUsers);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (!activeChatId) {
+      setMessages([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'chats', activeChatId, 'messages'),
+      orderBy('createdAt', 'asc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Message[];
+      setMessages(msgs);
+    });
+
+    return () => unsubscribe();
+  }, [activeChatId]);
+
+  useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+    if (!searchQuery.trim() || !user) {
+      setSearchResults({ users: [], chats: [] });
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    const search = async () => {
+      try {
+        const queryText = searchQuery.toLowerCase();
+        
+        // Search users (prefix match on username)
+        const usersRef = collection(db, 'users');
+        const q = query(
+          usersRef, 
+          where('username', '>=', queryText),
+          where('username', '<=', queryText + '\uf8ff'),
+          limit(5)
+        );
+        const usersSnapshot = await getDocs(q);
+        const foundUsers = usersSnapshot.docs
+          .map(doc => doc.data() as UserProfile)
+          .filter(u => u.uid !== user.uid);
+
+        // Search chats (filter existing chats state)
+        const foundChats = chats.filter(chat => 
+          chat.otherUser?.username.toLowerCase().includes(queryText) ||
+          chat.otherUser?.displayName.toLowerCase().includes(queryText)
+        );
+
+        setSearchResults({ users: foundUsers, chats: foundChats });
+      } catch (error) {
+        console.error('Search error:', error);
+      } finally {
+        setIsSearching(false);
+      }
+    };
+
+    const debounce = setTimeout(search, 300);
+    return () => clearTimeout(debounce);
+  }, [searchQuery, user, chats]);
 
   const [loginError, setLoginError] = useState<string | null>(null);
 
@@ -286,6 +393,33 @@ export default function App() {
     setShowAddFriendModal(false);
   };
 
+  const handleStartChat = async (friend: UserProfile) => {
+    if (!user) return;
+    
+    // Check if chat already exists
+    const existingChat = chats.find(c => c.participants.includes(friend.uid));
+    
+    if (existingChat) {
+      setActiveChatId(existingChat.id);
+      setActiveChatUser(friend);
+      setActiveTab('chats');
+      setSearchQuery('');
+      return;
+    }
+
+    // Create new chat
+    const chatRef = await addDoc(collection(db, 'chats'), {
+      participants: [user.uid, friend.uid],
+      createdAt: serverTimestamp(),
+      lastMessageTime: serverTimestamp()
+    });
+
+    setActiveChatId(chatRef.id);
+    setActiveChatUser(friend);
+    setActiveTab('chats');
+    setSearchQuery('');
+  };
+
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!user || !profile || !activeChatId || (!inputText.trim() && !selectedFile)) return;
@@ -332,6 +466,11 @@ export default function App() {
         ...fileData,
         createdAt: serverTimestamp()
       });
+
+      await setDoc(doc(db, 'chats', activeChatId), {
+        lastMessage: text || (file ? `Sent a ${file.type.split('/')[0]}` : 'Sent an attachment'),
+        lastMessageTime: serverTimestamp()
+      }, { merge: true });
       
       // Remove optimistic message once real one arrives via onSnapshot
       // (onSnapshot will handle the update, we just need to make sure we don't show duplicates)
@@ -343,12 +482,6 @@ export default function App() {
       setUploading(false);
     }
   };
-
-  const filteredMessages = messages.filter(msg => 
-    msg.text?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    msg.senderUsername.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    msg.fileName?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   if (loading) {
     return (
@@ -446,12 +579,89 @@ export default function App() {
             <Search className="absolute left-3 w-4 h-4 text-zinc-500" />
             <input 
               type="text" 
-              placeholder={`Search ${activeTab}...`}
+              placeholder="Search people and chats..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full py-2 pl-10 pr-4 bg-zinc-900/50 border border-zinc-800/50 rounded-full text-sm text-white focus:ring-1 focus:ring-white/10 outline-none transition-all"
             />
           </div>
+
+          {/* Search Results Dropdown */}
+          <AnimatePresence>
+            {searchQuery.trim() && (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                className="absolute top-full left-0 right-0 mt-2 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-50 max-h-[400px] overflow-y-auto"
+              >
+                {isSearching ? (
+                  <div className="p-4 flex justify-center">
+                    <Loader2 className="w-5 h-5 animate-spin text-zinc-500" />
+                  </div>
+                ) : searchResults.users.length === 0 && searchResults.chats.length === 0 ? (
+                  <div className="p-4 text-center text-zinc-500 text-sm">No results found</div>
+                ) : (
+                  <div className="py-2">
+                    {searchResults.chats.length > 0 && (
+                      <div className="mb-2">
+                        <h3 className="px-4 py-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">Chats</h3>
+                        {searchResults.chats.map(chat => (
+                          <button
+                            key={chat.id}
+                            onClick={() => {
+                              setActiveChatId(chat.id);
+                              setActiveChatUser(chat.otherUser || null);
+                              setActiveTab('chats');
+                              setSearchQuery('');
+                            }}
+                            className="w-full px-4 py-2 flex items-center gap-3 hover:bg-zinc-800/50 transition-colors text-left"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                              {chat.otherUser?.photoURL ? (
+                                <img src={chat.otherUser.photoURL} alt={chat.otherUser.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              ) : (
+                                <UserIcon className="w-4 h-4 text-zinc-500" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-white truncate">{chat.otherUser?.displayName}</p>
+                              <p className="text-xs text-zinc-500 truncate">@{chat.otherUser?.username}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    
+                    {searchResults.users.length > 0 && (
+                      <div>
+                        <h3 className="px-4 py-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">People</h3>
+                        {searchResults.users.map(user => (
+                          <button
+                            key={user.uid}
+                            onClick={() => handleStartChat(user)}
+                            className="w-full px-4 py-2 flex items-center gap-3 hover:bg-zinc-800/50 transition-colors text-left"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                              {user.photoURL ? (
+                                <img src={user.photoURL} alt={user.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              ) : (
+                                <UserIcon className="w-4 h-4 text-zinc-500" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-white truncate">{user.displayName}</p>
+                              <p className="text-xs text-zinc-500 truncate">@{user.username}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Tabs - Desktop */}
@@ -529,12 +739,105 @@ export default function App() {
 
       {/* Content Area */}
       <main className="flex-1 overflow-y-auto p-4 pb-24">
-        {activeTab === 'chats' && (
+        {activeTab === 'chats' && !activeChatId && (
           <div className="max-w-3xl mx-auto space-y-2">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-medium text-white">Chats</h2>
               <button onClick={() => setShowAddFriendModal(true)} className="p-2 bg-zinc-900 rounded-full hover:bg-zinc-800"><Plus className="w-5 h-5 text-white" /></button>
             </div>
+            {chats.length === 0 ? (
+              <p className="text-zinc-500 text-sm">No chats yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {chats.map(chat => (
+                  <div key={chat.id} onClick={() => { setActiveChatId(chat.id); setActiveChatUser(chat.otherUser || null); }} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 cursor-pointer hover:bg-zinc-800/50 transition-all">
+                    <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                      {chat.otherUser?.photoURL ? (
+                        <img src={chat.otherUser.photoURL} alt={chat.otherUser.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <UserIcon className="w-6 h-6 text-zinc-500" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white font-medium truncate">{chat.otherUser?.displayName || 'Unknown User'}</p>
+                      <p className="text-zinc-500 text-sm truncate">{chat.lastMessage || 'No messages yet'}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'chats' && activeChatId && (
+          <div className="max-w-3xl mx-auto flex flex-col h-[calc(100vh-12rem)]">
+            <div className="flex items-center gap-3 mb-4 pb-4 border-b border-zinc-800/50">
+              <button onClick={() => { setActiveChatId(null); setActiveChatUser(null); }} className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400">
+                <ArrowUp className="w-5 h-5 -rotate-90" />
+              </button>
+              <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden">
+                {activeChatUser?.photoURL ? (
+                  <img src={activeChatUser.photoURL} alt={activeChatUser.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <UserIcon className="w-5 h-5 text-zinc-500" />
+                )}
+              </div>
+              <div>
+                <p className="text-white font-medium">{activeChatUser?.displayName}</p>
+                <p className="text-zinc-500 text-xs">@{activeChatUser?.username}</p>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2" ref={scrollRef}>
+              {messages.map(msg => (
+                <div key={msg.id} className={cn("flex flex-col max-w-[80%]", msg.senderId === user.uid ? "ml-auto items-end" : "mr-auto items-start")}>
+                  <div className={cn("p-3 rounded-2xl", msg.senderId === user.uid ? "bg-white text-black rounded-br-sm" : "bg-zinc-900 text-white rounded-bl-sm border border-zinc-800")}>
+                    {msg.fileUrl && (
+                      <div className="mb-2">
+                        {msg.fileType?.startsWith('image/') ? (
+                          <img src={msg.fileUrl} alt="attachment" className="rounded-lg max-w-full" />
+                        ) : msg.fileType?.startsWith('video/') ? (
+                          <video src={msg.fileUrl} controls className="rounded-lg max-w-full" />
+                        ) : (
+                          <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-blue-400 underline">
+                            <FileIcon className="w-4 h-4" /> {msg.fileName}
+                          </a>
+                        )}
+                      </div>
+                    )}
+                    {msg.text && <p>{msg.text}</p>}
+                  </div>
+                  <span className="text-[10px] text-zinc-600 mt-1">
+                    {msg.createdAt?.toDate ? format(msg.createdAt.toDate(), 'h:mm a') : 'Sending...'}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <form onSubmit={handleSendMessage} className="flex items-end gap-2 bg-zinc-900/50 p-2 rounded-2xl border border-zinc-800/50">
+              <input type="file" id="file-upload" className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
+              <label htmlFor="file-upload" className="p-3 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl cursor-pointer transition-all">
+                <Paperclip className="w-5 h-5" />
+              </label>
+              <div className="flex-1 relative">
+                {selectedFile && (
+                  <div className="absolute bottom-full left-0 mb-2 p-2 bg-zinc-800 rounded-lg text-xs text-white flex items-center gap-2">
+                    <span className="truncate max-w-[150px]">{selectedFile.name}</span>
+                    <button type="button" onClick={() => setSelectedFile(null)}><X className="w-3 h-3" /></button>
+                  </div>
+                )}
+                <input 
+                  type="text" 
+                  placeholder="Message..." 
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  className="w-full bg-transparent text-white p-3 outline-none"
+                />
+              </div>
+              <button type="submit" disabled={(!inputText.trim() && !selectedFile) || uploading} className="p-3 bg-white text-black rounded-xl hover:bg-zinc-200 disabled:opacity-50 transition-all">
+                {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
+              </button>
+            </form>
           </div>
         )}
         {activeTab === 'friends' && (
@@ -548,7 +851,7 @@ export default function App() {
             ) : (
               <div className="space-y-2">
                 {friends.map(friend => (
-                  <div key={friend.uid} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50">
+                  <div key={friend.uid} onClick={() => handleStartChat(friend)} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 cursor-pointer hover:bg-zinc-800/50 transition-all">
                     <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden">
                       {friend.photoURL ? (
                         <img src={friend.photoURL} alt={friend.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />

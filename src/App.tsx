@@ -94,7 +94,22 @@ export default function App() {
         id: doc.id,
         ...doc.data()
       })) as Message[];
-      setMessages(msgs.reverse());
+      
+      // Merge with optimistic messages that haven't been saved yet
+      setMessages(prev => {
+        const pending = prev.filter(m => m.isPending);
+        const incomingIds = new Set(msgs.map(m => m.id));
+        const stillPending = pending.filter(m => !msgs.some(real => 
+          real.senderId === m.senderId && 
+          real.text === m.text && 
+          Math.abs(real.createdAt.toDate().getTime() - m.createdAt.toDate().getTime()) < 5000
+        ));
+        return [...msgs.reverse(), ...stillPending].sort((a, b) => {
+          const timeA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : Date.now();
+          const timeB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : Date.now();
+          return timeA - timeB;
+        });
+      });
     });
 
     return () => unsubscribe();
@@ -187,9 +202,24 @@ export default function App() {
 
     const text = inputText.trim();
     const file = selectedFile;
+    const tempId = Date.now().toString();
     
     setInputText('');
     setSelectedFile(null);
+
+    // Optimistic UI update
+    const optimisticMessage: Message = {
+      id: tempId,
+      senderId: user.uid,
+      senderUsername: profile.username,
+      text: text || null,
+      createdAt: { toDate: () => new Date() } as any,
+      isPending: true,
+      fileName: file?.name,
+      fileType: file?.type
+    };
+    
+    setMessages(prev => [...prev, optimisticMessage]);
 
     try {
       let fileData = {};
@@ -212,8 +242,13 @@ export default function App() {
         ...fileData,
         createdAt: serverTimestamp()
       });
+      
+      // Remove optimistic message once real one arrives via onSnapshot
+      // (onSnapshot will handle the update, we just need to make sure we don't show duplicates)
     } catch (error) {
       console.error('Failed to send message', error);
+      setMessages(prev => prev.filter(m => m.id !== tempId));
+      setLoginError('Failed to send message. Please try again.');
     } finally {
       setUploading(false);
     }
@@ -227,25 +262,25 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-white text-black">
-        <Loader2 className="w-8 h-8 animate-spin" />
+      <div className="flex items-center justify-center min-h-screen bg-black text-white">
+        <Loader2 className="w-8 h-8 animate-spin text-zinc-500" />
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#F8F9FA] p-6">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-md p-8 bg-white/70 backdrop-blur-xl rounded-3xl border border-white/20 shadow-2xl text-center"
+          className="w-full max-w-md p-8 bg-zinc-900/50 backdrop-blur-xl rounded-3xl border border-white/5 shadow-2xl text-center"
         >
-          <h1 className="text-4xl font-light tracking-tight mb-2 text-black">Lumina</h1>
-          <p className="text-gray-500 mb-8 font-light">Minimalist sharing for the modern web.</p>
+          <h1 className="text-4xl font-light tracking-tight mb-2 text-white">Lumina</h1>
+          <p className="text-zinc-500 mb-8 font-light">Minimalist sharing for the modern web.</p>
           <button 
             onClick={handleLogin}
-            className="w-full py-4 bg-black text-white rounded-2xl font-medium hover:bg-gray-800 transition-all flex items-center justify-center gap-3 shadow-lg"
+            className="w-full py-4 bg-white text-black rounded-2xl font-medium hover:bg-zinc-200 transition-all flex items-center justify-center gap-3 shadow-lg"
           >
             <UserIcon className="w-5 h-5" />
             Continue with Google
@@ -253,7 +288,7 @@ export default function App() {
           
           <button 
             onClick={handleAnonymousLogin}
-            className="w-full py-4 bg-white text-black border border-gray-200 rounded-2xl font-medium hover:bg-gray-50 transition-all flex items-center justify-center gap-3 mt-3"
+            className="w-full py-4 bg-zinc-800 text-white border border-zinc-700 rounded-2xl font-medium hover:bg-zinc-700 transition-all flex items-center justify-center gap-3 mt-3"
           >
             <UserIcon className="w-5 h-5 opacity-50" />
             Continue Anonymously
@@ -262,10 +297,10 @@ export default function App() {
             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mt-6 p-4 bg-red-50 rounded-2xl border border-red-100"
+              className="mt-6 p-4 bg-red-500/10 rounded-2xl border border-red-500/20"
             >
-              <p className="text-red-600 text-sm font-medium">{loginError}</p>
-              <p className="text-red-500 text-xs mt-1">
+              <p className="text-red-400 text-sm font-medium">{loginError}</p>
+              <p className="text-red-400/60 text-xs mt-1">
                 Click the "Open in new tab" icon in the top right of the preview to fix this.
               </p>
             </motion.div>
@@ -277,13 +312,13 @@ export default function App() {
 
   if (showUsernameModal) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#F8F9FA] p-6">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6">
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-md p-8 bg-white/70 backdrop-blur-xl rounded-3xl border border-white/20 shadow-2xl"
+          className="w-full max-w-md p-8 bg-zinc-900/50 backdrop-blur-xl rounded-3xl border border-white/5 shadow-2xl"
         >
-          <h2 className="text-2xl font-light mb-6 text-black">Choose your username</h2>
+          <h2 className="text-2xl font-light mb-6 text-white">Choose your username</h2>
           <form onSubmit={handleSetUsername} className="space-y-4">
             <div>
               <input 
@@ -291,15 +326,15 @@ export default function App() {
                 placeholder="username"
                 value={usernameInput}
                 onChange={(e) => setUsernameInput(e.target.value)}
-                className="w-full p-4 bg-gray-100/50 border-none rounded-2xl focus:ring-2 focus:ring-black outline-none transition-all"
+                className="w-full p-4 bg-zinc-800/50 border border-zinc-700 rounded-2xl text-white focus:ring-2 focus:ring-white/20 outline-none transition-all"
                 disabled={checkingUsername}
               />
-              {usernameError && <p className="text-red-500 text-sm mt-2 ml-2">{usernameError}</p>}
+              {usernameError && <p className="text-red-400 text-sm mt-2 ml-2">{usernameError}</p>}
             </div>
             <button 
               type="submit"
               disabled={checkingUsername}
-              className="w-full py-4 bg-black text-white rounded-2xl font-medium hover:bg-gray-800 disabled:bg-gray-400 transition-all flex items-center justify-center gap-2"
+              className="w-full py-4 bg-white text-black rounded-2xl font-medium hover:bg-zinc-200 disabled:bg-zinc-800 disabled:text-zinc-600 transition-all flex items-center justify-center gap-2"
             >
               {checkingUsername ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Start Chatting'}
             </button>
@@ -310,12 +345,12 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-[#F8F9FA] text-black font-sans">
+    <div className="flex flex-col h-screen bg-[#050505] text-white font-sans">
       {/* Header */}
-      <header className="h-16 px-4 sm:px-6 flex items-center justify-between bg-white/50 backdrop-blur-md border-b border-gray-200/50 sticky top-0 z-10">
+      <header className="h-16 px-4 sm:px-6 flex items-center justify-between bg-black/50 backdrop-blur-md border-b border-zinc-800/50 sticky top-0 z-10">
         <div className="flex items-center gap-3 min-w-[120px]">
-          <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center flex-shrink-0">
-            <span className="text-white font-bold text-xs">L</span>
+          <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center flex-shrink-0">
+            <span className="text-black font-bold text-xs">L</span>
           </div>
           <h1 className="text-xl font-light tracking-tight hidden sm:block">Lumina</h1>
         </div>
@@ -323,22 +358,22 @@ export default function App() {
         {/* Search Bar */}
         <div className="flex-1 max-w-md mx-4 relative">
           <div className="relative flex items-center">
-            <Search className="absolute left-3 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 w-4 h-4 text-zinc-500" />
             <input 
-              type="text"
+              type="text" 
               placeholder="Search people or messages..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full py-2 pl-10 pr-4 bg-gray-100/50 border-none rounded-full text-sm focus:ring-1 focus:ring-black/10 outline-none transition-all"
+              className="w-full py-2 pl-10 pr-4 bg-zinc-900/50 border border-zinc-800/50 rounded-full text-sm text-white focus:ring-1 focus:ring-white/10 outline-none transition-all"
             />
           </div>
         </div>
 
         <div className="flex items-center gap-4 min-w-[120px] justify-end">
-          <span className="text-sm text-gray-500 hidden md:inline">@{profile?.username}</span>
+          <span className="text-sm text-zinc-500 hidden md:inline">@{profile?.username}</span>
           <button 
             onClick={handleLogout}
-            className="p-2 hover:bg-gray-200/50 rounded-full transition-all text-gray-600"
+            className="p-2 hover:bg-zinc-800 rounded-full transition-all text-zinc-400"
           >
             <LogOut className="w-5 h-5" />
           </button>
@@ -351,7 +386,11 @@ export default function App() {
         className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth"
       >
         <div className="max-w-3xl mx-auto space-y-6 py-4">
-          {filteredMessages.map((msg) => (
+          {messages.filter(msg => 
+            msg.text?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            msg.senderUsername.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            msg.fileName?.toLowerCase().includes(searchQuery.toLowerCase())
+          ).map((msg) => (
             <motion.div 
               key={msg.id}
               initial={{ opacity: 0, y: 10 }}
@@ -362,24 +401,30 @@ export default function App() {
               )}
             >
               <div className="flex items-center gap-2 mb-1 px-1">
-                <span className="text-[10px] font-medium text-gray-400 uppercase tracking-widest">
+                <span className="text-[10px] font-medium text-zinc-500 uppercase tracking-widest">
                   {msg.senderUsername}
                 </span>
-                <span className="text-[10px] text-gray-300">
+                <span className="text-[10px] text-zinc-600">
                   {msg.createdAt?.toDate ? format(msg.createdAt.toDate(), 'HH:mm') : ''}
                 </span>
               </div>
               
               <div className={cn(
-                "p-4 rounded-3xl shadow-sm",
+                "p-4 rounded-3xl shadow-sm relative overflow-hidden",
                 msg.senderId === user.uid 
-                  ? "bg-black text-white rounded-tr-none" 
-                  : "bg-white text-black border border-gray-100 rounded-tl-none"
+                  ? "bg-white text-black rounded-tr-none" 
+                  : "bg-zinc-900 text-white border border-zinc-800 rounded-tl-none",
+                msg.isPending && "opacity-70"
               )}>
+                {msg.isPending && (
+                  <div className="absolute inset-0 bg-black/5 flex items-center justify-center">
+                    <Loader2 className="w-4 h-4 animate-spin opacity-20" />
+                  </div>
+                )}
                 {msg.text && <p className="text-sm leading-relaxed">{msg.text}</p>}
                 
-                {msg.fileUrl && (
-                  <div className={cn("mt-2", msg.text ? "pt-2 border-t border-white/10" : "")}>
+                {msg.fileUrl ? (
+                  <div className={cn("mt-2", msg.text ? "pt-2 border-t border-black/5" : "")}>
                     {msg.fileType?.startsWith('image/') ? (
                       <img 
                         src={msg.fileUrl} 
@@ -399,7 +444,7 @@ export default function App() {
                         href={msg.fileUrl} 
                         target="_blank" 
                         rel="noopener noreferrer"
-                        className="flex items-center gap-3 p-3 bg-white/10 rounded-xl hover:bg-white/20 transition-all"
+                        className="flex items-center gap-3 p-3 bg-black/5 rounded-xl hover:bg-black/10 transition-all"
                       >
                         <FileIcon className="w-5 h-5" />
                         <div className="flex flex-col overflow-hidden">
@@ -409,20 +454,20 @@ export default function App() {
                       </a>
                     )}
                   </div>
+                ) : msg.isPending && msg.fileName && (
+                  <div className="mt-2 p-3 bg-black/5 rounded-xl flex items-center gap-3">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-xs opacity-60">Uploading {msg.fileName}...</span>
+                  </div>
                 )}
               </div>
             </motion.div>
           ))}
-          {filteredMessages.length === 0 && searchQuery && (
-            <div className="text-center py-20">
-              <p className="text-gray-400 font-light">No results found for "{searchQuery}"</p>
-            </div>
-          )}
         </div>
       </main>
 
       {/* Input Area */}
-      <footer className="p-4 bg-white/50 backdrop-blur-md border-t border-gray-200/50">
+      <footer className="p-4 bg-black/50 backdrop-blur-md border-t border-zinc-800/50">
         <div className="max-w-3xl mx-auto">
           <AnimatePresence>
             {selectedFile && (
@@ -430,15 +475,15 @@ export default function App() {
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
-                className="mb-3 p-3 bg-black/5 rounded-2xl flex items-center justify-between overflow-hidden"
+                className="mb-3 p-3 bg-zinc-900 rounded-2xl flex items-center justify-between overflow-hidden border border-zinc-800"
               >
                 <div className="flex items-center gap-3">
-                  {selectedFile.type.startsWith('image/') ? <ImageIcon className="w-5 h-5" /> : <FileIcon className="w-5 h-5" />}
-                  <span className="text-sm truncate max-w-[200px]">{selectedFile.name}</span>
+                  {selectedFile.type.startsWith('image/') ? <ImageIcon className="w-5 h-5 text-zinc-400" /> : <FileIcon className="w-5 h-5 text-zinc-400" />}
+                  <span className="text-sm truncate max-w-[200px] text-zinc-300">{selectedFile.name}</span>
                 </div>
                 <button 
                   onClick={() => setSelectedFile(null)}
-                  className="p-1 hover:bg-black/10 rounded-full transition-all"
+                  className="p-1 hover:bg-zinc-800 rounded-full transition-all text-zinc-500"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -448,9 +493,9 @@ export default function App() {
 
           <form 
             onSubmit={handleSendMessage}
-            className="flex items-center gap-2 bg-white rounded-full p-2 shadow-sm border border-gray-100"
+            className="flex items-center gap-2 bg-zinc-900 rounded-full p-2 shadow-sm border border-zinc-800"
           >
-            <label className="p-3 hover:bg-gray-100 rounded-full cursor-pointer transition-all text-gray-500">
+            <label className="p-3 hover:bg-zinc-800 rounded-full cursor-pointer transition-all text-zinc-400">
               <Paperclip className="w-5 h-5" />
               <input 
                 type="file" 
@@ -464,16 +509,15 @@ export default function App() {
               placeholder="Type a message..."
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              className="flex-1 bg-transparent border-none outline-none px-4 text-sm"
-              disabled={uploading}
+              className="flex-1 bg-transparent border-none outline-none px-4 text-sm text-white"
             />
             
             <button 
               type="submit"
-              disabled={(!inputText.trim() && !selectedFile) || uploading}
-              className="p-3 bg-black text-white rounded-full hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-400 transition-all shadow-md"
+              disabled={(!inputText.trim() && !selectedFile)}
+              className="p-3 bg-white text-black rounded-full hover:bg-zinc-200 disabled:bg-zinc-800 disabled:text-zinc-600 transition-all shadow-md"
             >
-              {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
+              <ArrowUp className="w-5 h-5" />
             </button>
           </form>
         </div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   GoogleAuthProvider, 
   signInWithPopup, 
+  signInAnonymously,
   onAuthStateChanged, 
   signOut,
   User as FirebaseUser
@@ -105,12 +106,30 @@ export default function App() {
     }
   }, [messages]);
 
+  const [loginError, setLoginError] = useState<string | null>(null);
+
   const handleLogin = async () => {
+    setLoginError(null);
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Login failed', error);
+      if (error.code === 'auth/internal-error' || error.message?.includes('initial state')) {
+        setLoginError('Iframe restriction detected. Please open the app in a new tab to sign in.');
+      } else {
+        setLoginError(error.message || 'Login failed. Please try again.');
+      }
+    }
+  };
+
+  const handleAnonymousLogin = async () => {
+    setLoginError(null);
+    try {
+      await signInAnonymously(auth);
+    } catch (error: any) {
+      console.error('Anonymous login failed', error);
+      setLoginError(error.message || 'Anonymous login failed. Please ensure it is enabled in Firebase Console.');
     }
   };
 
@@ -231,6 +250,26 @@ export default function App() {
             <UserIcon className="w-5 h-5" />
             Continue with Google
           </button>
+          
+          <button 
+            onClick={handleAnonymousLogin}
+            className="w-full py-4 bg-white text-black border border-gray-200 rounded-2xl font-medium hover:bg-gray-50 transition-all flex items-center justify-center gap-3 mt-3"
+          >
+            <UserIcon className="w-5 h-5 opacity-50" />
+            Continue Anonymously
+          </button>
+          {loginError && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-6 p-4 bg-red-50 rounded-2xl border border-red-100"
+            >
+              <p className="text-red-600 text-sm font-medium">{loginError}</p>
+              <p className="text-red-500 text-xs mt-1">
+                Click the "Open in new tab" icon in the top right of the preview to fix this.
+              </p>
+            </motion.div>
+          )}
         </motion.div>
       </div>
     );

@@ -15,4 +15,5 @@ export interface Message {
   fileType?: string;
   fileName?: string;
   createdAt: any;
+  isPending?: boolean;
 }

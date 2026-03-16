@@ -38,6 +38,10 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isMember(channelId) {
+      return isAuthenticated() && exists(/databases/$(database)/documents/channels/$(channelId)/members/$(request.auth.uid));
+    }
+
     function isValidUsername(username) {
       return username is string && username.size() >= 3 && username.size() <= 20 && username.matches("^[a-zA-Z0-9_]+$");
     }
@@ -54,6 +58,11 @@ service cloud.firestore {
              (data.text is string || data.fileUrl is string);
     }
 
+    function isValidChannel(data) {
+      return data.keys().hasAll(['name', 'createdAt', 'createdBy', 'messageRetentionDays']) &&
+             data.messageRetentionDays in [30, 60];
+    }
+
     // Rules
     match /users/{userId} {
       allow read: if isAuthenticated();
@@ -66,10 +75,27 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidUsername(username) && request.resource.data.uid == request.auth.uid;
     }
 
-    match /messages/{messageId} {
+    match /channels/{channelId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidMessage(request.resource.data);
-      allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidChannel(request.resource.data);
+      
+      match /messages/{messageId} {
+        allow read: if isMember(channelId);
+        allow create: if isMember(channelId) && isValidMessage(request.resource.data);
+        allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+      }
+      
+      match /members/{userId} {
+        allow read: if isAuthenticated();
+        allow create: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    match /friends/{friendId} {
+      allow read: if isAuthenticated() && (resource.data.userId1 == request.auth.uid || resource.data.userId2 == request.auth.uid);
+      allow create: if isAuthenticated() && (request.resource.data.userId1 == request.auth.uid || request.resource.data.userId2 == request.auth.uid);
+      allow delete: if isAuthenticated() && (resource.data.userId1 == request.auth.uid || resource.data.userId2 == request.auth.uid);
     }
   }
 }

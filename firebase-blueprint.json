@@ -1,46 +1,71 @@
 {
   "entities": {
-    "User": {
-      "title": "User",
-      "description": "User profile information",
+    "Channel": {
+      "title": "Channel",
+      "description": "A chat channel or group.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string" },
-        "username": { "type": "string" },
-        "displayName": { "type": "string" },
-        "photoURL": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "name": { "type": "string", "description": "The name of the channel." },
+        "description": { "type": "string", "description": "A short description of the channel." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the channel was created." },
+        "createdBy": { "type": "string", "description": "The UID of the user who created the channel." },
+        "messageRetentionDays": { "type": "number", "description": "Retention period in days (30 or 60)." }
       },
-      "required": ["uid", "username", "createdAt"]
+      "required": ["name", "createdAt", "createdBy", "messageRetentionDays"]
     },
     "Message": {
       "title": "Message",
-      "description": "A message sent in the chat",
+      "description": "A message within a channel.",
       "type": "object",
       "properties": {
-        "senderId": { "type": "string" },
-        "senderUsername": { "type": "string" },
-        "text": { "type": "string" },
-        "fileUrl": { "type": "string" },
-        "fileType": { "type": "string" },
-        "fileName": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "senderId": { "type": "string", "description": "The UID of the sender." },
+        "senderUsername": { "type": "string", "description": "The username of the sender." },
+        "text": { "type": "string", "description": "The message text." },
+        "fileUrl": { "type": "string", "description": "URL of the uploaded file." },
+        "fileType": { "type": "string", "description": "MIME type of the file." },
+        "fileName": { "type": "string", "description": "Name of the file." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the message was sent." }
       },
       "required": ["senderId", "senderUsername", "createdAt"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "A user who is a member of a channel.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user." },
+        "joinedAt": { "type": "string", "format": "date-time", "description": "When the user joined." }
+      },
+      "required": ["userId", "joinedAt"]
+    },
+    "Friend": {
+      "title": "Friend",
+      "description": "A friendship between two users.",
+      "type": "object",
+      "properties": {
+        "userId1": { "type": "string", "description": "UID of the first user." },
+        "userId2": { "type": "string", "description": "UID of the second user." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the friendship was created." }
+      },
+      "required": ["userId1", "userId2", "createdAt"]
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": "User",
-      "description": "User profiles"
+    "/channels/{channelId}": {
+      "schema": { "$ref": "Channel" },
+      "description": "Stores channel information."
     },
-    "/usernames/{username}": {
-      "schema": { "type": "object", "properties": { "uid": { "type": "string" } } },
-      "description": "Unique username mapping"
+    "/channels/{channelId}/messages/{messageId}": {
+      "schema": { "$ref": "Message" },
+      "description": "Stores messages within a channel."
     },
-    "/messages/{messageId}": {
-      "schema": "Message",
-      "description": "Global chat messages"
+    "/channels/{channelId}/members/{userId}": {
+      "schema": { "$ref": "Member" },
+      "description": "Stores channel members."
+    },
+    "/friends/{friendId}": {
+      "schema": { "$ref": "Friend" },
+      "description": "Stores friendships."
     }
   }
 }

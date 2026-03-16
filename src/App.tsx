@@ -446,24 +446,14 @@ export default function App() {
     setMessages(prev => [...prev, optimisticMessage]);
 
     try {
-      let fileData = {};
-      if (file) {
-        setUploading(true);
-        const fileRef = ref(storage, `files/${Date.now()}_${file.name}`);
-        await uploadBytes(fileRef, file);
-        const url = await getDownloadURL(fileRef);
-        fileData = {
-          fileUrl: url,
-          fileType: file.type,
-          fileName: file.name
-        };
-      }
-
-      await addDoc(collection(db, 'chats', activeChatId, 'messages'), {
+      // Create the message document first so it appears instantly for the sender
+      // (and others, though without the file URL yet)
+      const messageRef = await addDoc(collection(db, 'chats', activeChatId, 'messages'), {
         senderId: user.uid,
         senderUsername: profile.username,
         text: text || null,
-        ...fileData,
+        fileName: file?.name || null,
+        fileType: file?.type || null,
         createdAt: serverTimestamp()
       });
 
@@ -471,15 +461,33 @@ export default function App() {
         lastMessage: text || (file ? `Sent a ${file.type.split('/')[0]}` : 'Sent an attachment'),
         lastMessageTime: serverTimestamp()
       }, { merge: true });
+
+      // If there's a file, upload it in the background and update the message
+      if (file) {
+        setUploading(true);
+        // Fire and forget the upload
+        (async () => {
+          try {
+            const fileRef = ref(storage, `files/${Date.now()}_${file.name}`);
+            await uploadBytes(fileRef, file);
+            const url = await getDownloadURL(fileRef);
+            
+            await setDoc(doc(db, 'chats', activeChatId, 'messages', messageRef.id), {
+              fileUrl: url
+            }, { merge: true });
+          } catch (uploadError) {
+            console.error('Failed to upload file', uploadError);
+            // Optionally update the message to show upload failed
+          } finally {
+            setUploading(false);
+          }
+        })();
+      }
       
-      // Remove optimistic message once real one arrives via onSnapshot
-      // (onSnapshot will handle the update, we just need to make sure we don't show duplicates)
     } catch (error) {
       console.error('Failed to send message', error);
       setMessages(prev => prev.filter(m => m.id !== tempId));
       setLoginError('Failed to send message. Please try again.');
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -738,9 +746,9 @@ export default function App() {
       </AnimatePresence>
 
       {/* Content Area */}
-      <main className="flex-1 overflow-y-auto p-4 pb-24">
+      <main className="flex-1 overflow-y-auto p-4 flex flex-col h-[calc(100vh-4rem)]">
         {activeTab === 'chats' && !activeChatId && (
-          <div className="max-w-3xl mx-auto space-y-2">
+          <div className="max-w-3xl mx-auto w-full space-y-2">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-medium text-white">Chats</h2>
               <button onClick={() => setShowAddFriendModal(true)} className="p-2 bg-zinc-900 rounded-full hover:bg-zinc-800"><Plus className="w-5 h-5 text-white" /></button>
@@ -770,8 +778,8 @@ export default function App() {
         )}
 
         {activeTab === 'chats' && activeChatId && (
-          <div className="max-w-3xl mx-auto flex flex-col h-[calc(100vh-12rem)]">
-            <div className="flex items-center gap-3 mb-4 pb-4 border-b border-zinc-800/50">
+          <div className="max-w-3xl mx-auto w-full flex flex-col h-full relative">
+            <div className="flex items-center gap-3 mb-4 pb-4 border-b border-zinc-800/50 flex-shrink-0">
               <button onClick={() => { setActiveChatId(null); setActiveChatUser(null); }} className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400">
                 <ArrowUp className="w-5 h-5 -rotate-90" />
               </button>
@@ -788,7 +796,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2" ref={scrollRef}>
+            <div className="flex-1 overflow-y-auto space-y-4 pr-2" ref={scrollRef}>
               {messages.map(msg => (
                 <div key={msg.id} className={cn("flex flex-col max-w-[80%]", msg.senderId === user.uid ? "ml-auto items-end" : "mr-auto items-start")}>
                   <div className={cn("p-3 rounded-2xl", msg.senderId === user.uid ? "bg-white text-black rounded-br-sm" : "bg-zinc-900 text-white rounded-bl-sm border border-zinc-800")}>
@@ -814,30 +822,32 @@ export default function App() {
               ))}
             </div>
 
-            <form onSubmit={handleSendMessage} className="flex items-end gap-2 bg-zinc-900/50 p-2 rounded-2xl border border-zinc-800/50">
-              <input type="file" id="file-upload" className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
-              <label htmlFor="file-upload" className="p-3 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl cursor-pointer transition-all">
-                <Paperclip className="w-5 h-5" />
-              </label>
-              <div className="flex-1 relative">
-                {selectedFile && (
-                  <div className="absolute bottom-full left-0 mb-2 p-2 bg-zinc-800 rounded-lg text-xs text-white flex items-center gap-2">
-                    <span className="truncate max-w-[150px]">{selectedFile.name}</span>
-                    <button type="button" onClick={() => setSelectedFile(null)}><X className="w-3 h-3" /></button>
-                  </div>
-                )}
-                <input 
-                  type="text" 
-                  placeholder="Message..." 
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  className="w-full bg-transparent text-white p-3 outline-none"
-                />
-              </div>
-              <button type="submit" disabled={(!inputText.trim() && !selectedFile) || uploading} className="p-3 bg-white text-black rounded-xl hover:bg-zinc-200 disabled:opacity-50 transition-all">
-                {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
-              </button>
-            </form>
+            <div className="flex-shrink-0 pt-2 pb-2">
+              <form onSubmit={handleSendMessage} className="flex items-end gap-2 bg-zinc-900/80 backdrop-blur-md p-2 rounded-full border border-zinc-800/50 shadow-xl">
+                <input type="file" id="file-upload" className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
+                <label htmlFor="file-upload" className="p-3 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-full cursor-pointer transition-all flex-shrink-0">
+                  <Paperclip className="w-5 h-5" />
+                </label>
+                <div className="flex-1 relative flex items-center">
+                  {selectedFile && (
+                    <div className="absolute bottom-full left-0 mb-4 p-2 bg-zinc-800 rounded-xl text-xs text-white flex items-center gap-2 shadow-lg border border-zinc-700">
+                      <span className="truncate max-w-[150px]">{selectedFile.name}</span>
+                      <button type="button" onClick={() => setSelectedFile(null)} className="hover:bg-zinc-700 p-1 rounded-full"><X className="w-3 h-3" /></button>
+                    </div>
+                  )}
+                  <input 
+                    type="text" 
+                    placeholder="Message..." 
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    className="w-full bg-transparent text-white py-3 px-2 outline-none"
+                  />
+                </div>
+                <button type="submit" disabled={(!inputText.trim() && !selectedFile) || uploading} className="p-3 bg-white text-black rounded-full hover:bg-zinc-200 disabled:opacity-50 transition-all flex-shrink-0">
+                  {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
+                </button>
+              </form>
+            </div>
           </div>
         )}
         {activeTab === 'friends' && (

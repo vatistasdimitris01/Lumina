@@ -106,6 +106,7 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read: if isAuthenticated() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
         allow create: if isAuthenticated() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants && request.resource.data.senderId == request.auth.uid;
+        allow update: if isAuthenticated() && resource.data.senderId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fileUrl']);
         allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
       }
     }

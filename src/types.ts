@@ -6,12 +6,20 @@ export interface UserProfile {
   createdAt: any;
 }
 
+export interface FriendProfile extends UserProfile {
+  relationshipId: string;
+  status: 'pending' | 'accepted';
+  initiator: string;
+}
+
 export interface Chat {
   id: string;
   participants: string[];
   lastMessage?: string;
   lastMessageTime?: any;
   createdAt: any;
+  status?: 'pending' | 'accepted';
+  initiator?: string;
 }
 
 export interface Message {

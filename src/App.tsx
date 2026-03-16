@@ -31,7 +31,7 @@ import {
 } from 'firebase/storage';
 import { auth, db, storage } from './firebase';
 import { cn } from './lib/utils';
-import { Message, UserProfile, Chat } from './types';
+import { Message, UserProfile, Chat, FriendProfile } from './types';
 import { 
   ArrowUp, 
   Image as ImageIcon, 
@@ -46,7 +46,9 @@ import {
   Menu,
   Plus,
   MessageSquare,
-  Hash
+  Hash,
+  Check,
+  X as XIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -68,7 +70,7 @@ export default function App() {
   const [checkingUsername, setCheckingUsername] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [friends, setFriends] = useState<UserProfile[]>([]);
+  const [friends, setFriends] = useState<FriendProfile[]>([]);
   const [chats, setChats] = useState<(Chat & { otherUser?: UserProfile })[]>([]);
   const [activeChatUser, setActiveChatUser] = useState<UserProfile | null>(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -109,22 +111,25 @@ export default function App() {
     );
 
     const unsubscribe = onSnapshot(q, async (snapshot) => {
-      const friendIds = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return data.userId1 === user.uid ? data.userId2 : data.userId1;
-      });
-
-      if (friendIds.length === 0) {
+      if (snapshot.docs.length === 0) {
         setFriends([]);
         return;
       }
 
       // Fetch user profiles for all friends
-      const friendsProfiles: UserProfile[] = [];
-      for (const id of friendIds) {
-        const userDoc = await getDoc(doc(db, 'users', id));
+      const friendsProfiles: FriendProfile[] = [];
+      for (const docSnapshot of snapshot.docs) {
+        const data = docSnapshot.data();
+        const friendId = data.userId1 === user.uid ? data.userId2 : data.userId1;
+        
+        const userDoc = await getDoc(doc(db, 'users', friendId));
         if (userDoc.exists()) {
-          friendsProfiles.push(userDoc.data() as UserProfile);
+          friendsProfiles.push({
+            ...(userDoc.data() as UserProfile),
+            relationshipId: docSnapshot.id,
+            status: data.status || 'accepted', // default to accepted for old data
+            initiator: data.initiator || data.userId1 // default for old data
+          });
         }
       }
       setFriends(friendsProfiles);
@@ -370,6 +375,46 @@ export default function App() {
     }
   };
 
+  const handleAcceptChat = async (chatId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await setDoc(doc(db, 'chats', chatId), { status: 'accepted' }, { merge: true });
+  };
+
+  const handleDeclineChat = async (chatId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await deleteDoc(doc(db, 'chats', chatId));
+  };
+
+  const handleAcceptFriend = async (relationshipId: string) => {
+    await setDoc(doc(db, 'friends', relationshipId), { status: 'accepted' }, { merge: true });
+  };
+
+  const handleDeclineFriend = async (relationshipId: string) => {
+    await deleteDoc(doc(db, 'friends', relationshipId));
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.indexOf('image') !== -1 || item.type.indexOf('video') !== -1 || item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) {
+          setSelectedFile(file);
+          break;
+        }
+      }
+    }
+  };
+
+  const pendingChats = chats.filter(c => c.status === 'pending' && c.initiator !== user?.uid);
+  const activeChats = chats.filter(c => c.status !== 'pending' || c.initiator === user?.uid);
+
+  const pendingFriends = friends.filter(f => f.status === 'pending' && f.initiator !== user?.uid);
+  const activeFriends = friends.filter(f => f.status === 'accepted');
+  const sentFriends = friends.filter(f => f.status === 'pending' && f.initiator === user?.uid);
+
   const handleAddFriend = async () => {
     if (!user || !friendUsernameInput.trim()) return;
     
@@ -383,9 +428,32 @@ export default function App() {
     }
     
     const friendId = snapshot.docs[0].id;
+    
+    // Check if relationship already exists
+    const existingQ = query(
+      collection(db, 'friends'),
+      or(
+        where('userId1', '==', user.uid),
+        where('userId2', '==', user.uid)
+      )
+    );
+    const existingSnapshot = await getDocs(existingQ);
+    const alreadyFriends = existingSnapshot.docs.some(doc => {
+      const data = doc.data();
+      return (data.userId1 === user.uid && data.userId2 === friendId) || 
+             (data.userId2 === user.uid && data.userId1 === friendId);
+    });
+
+    if (alreadyFriends) {
+      alert('You are already friends or have a pending request.');
+      return;
+    }
+
     await addDoc(collection(db, 'friends'), {
       userId1: user.uid,
       userId2: friendId,
+      initiator: user.uid,
+      status: 'pending',
       createdAt: serverTimestamp()
     });
     
@@ -410,6 +478,8 @@ export default function App() {
     // Create new chat
     const chatRef = await addDoc(collection(db, 'chats'), {
       participants: [user.uid, friend.uid],
+      initiator: user.uid,
+      status: 'pending',
       createdAt: serverTimestamp(),
       lastMessageTime: serverTimestamp()
     });
@@ -756,29 +826,65 @@ export default function App() {
             {chats.length === 0 ? (
               <p className="text-zinc-500 text-sm">No chats yet.</p>
             ) : (
-              <div className="space-y-2">
-                {chats.map(chat => (
-                  <div key={chat.id} onClick={() => { setActiveChatId(chat.id); setActiveChatUser(chat.otherUser || null); }} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 cursor-pointer hover:bg-zinc-800/50 transition-all">
-                    <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
-                      {chat.otherUser?.photoURL ? (
-                        <img src={chat.otherUser.photoURL} alt={chat.otherUser.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <UserIcon className="w-6 h-6 text-zinc-500" />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white font-medium truncate">{chat.otherUser?.displayName || 'Unknown User'}</p>
-                      <p className="text-zinc-500 text-sm truncate">{chat.lastMessage || 'No messages yet'}</p>
-                    </div>
+              <div className="space-y-6">
+                {pendingChats.length > 0 && (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">Chat Requests</h3>
+                    {pendingChats.map(chat => (
+                      <div key={chat.id} onClick={() => { setActiveChatId(chat.id); setActiveChatUser(chat.otherUser || null); }} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 cursor-pointer hover:bg-zinc-800/50 transition-all">
+                        <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                          {chat.otherUser?.photoURL ? (
+                            <img src={chat.otherUser.photoURL} alt={chat.otherUser.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon className="w-6 h-6 text-zinc-500" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-medium truncate">{chat.otherUser?.displayName || 'Unknown User'}</p>
+                          <p className="text-zinc-500 text-sm truncate">Wants to chat with you</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={(e) => handleAcceptChat(chat.id, e)} className="p-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded-full transition-colors">
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button onClick={(e) => handleDeclineChat(chat.id, e)} className="p-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-full transition-colors">
+                            <XIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
+
+                {activeChats.length > 0 && (
+                  <div className="space-y-2">
+                    {pendingChats.length > 0 && <h3 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">Active Chats</h3>}
+                    {activeChats.map(chat => (
+                      <div key={chat.id} onClick={() => { setActiveChatId(chat.id); setActiveChatUser(chat.otherUser || null); }} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 cursor-pointer hover:bg-zinc-800/50 transition-all">
+                        <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                          {chat.otherUser?.photoURL ? (
+                            <img src={chat.otherUser.photoURL} alt={chat.otherUser.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon className="w-6 h-6 text-zinc-500" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-medium truncate">{chat.otherUser?.displayName || 'Unknown User'}</p>
+                          <p className="text-zinc-500 text-sm truncate">
+                            {chat.status === 'pending' && chat.initiator === user?.uid ? 'Request sent...' : (chat.lastMessage || 'No messages yet')}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
         )}
 
         {activeTab === 'chats' && activeChatId && (
-          <div className="max-w-3xl mx-auto w-full flex flex-col h-full relative">
+          <div className="max-w-3xl mx-auto w-full flex flex-col h-full relative" onPaste={handlePaste}>
             <div className="flex items-center gap-3 mb-4 pb-4 border-b border-zinc-800/50 flex-shrink-0">
               <button onClick={() => { setActiveChatId(null); setActiveChatUser(null); }} className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400">
                 <ArrowUp className="w-5 h-5 -rotate-90" />
@@ -837,7 +943,7 @@ export default function App() {
                   )}
                   <input 
                     type="text" 
-                    placeholder="Message..." 
+                    placeholder="Message... (Paste files here)" 
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     className="w-full bg-transparent text-white py-3 px-2 outline-none"
@@ -851,7 +957,7 @@ export default function App() {
           </div>
         )}
         {activeTab === 'friends' && (
-          <div className="max-w-3xl mx-auto space-y-2">
+          <div className="max-w-3xl mx-auto w-full space-y-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-medium text-white">Friends</h2>
               <button onClick={() => setShowAddFriendModal(true)} className="p-2 bg-zinc-900 rounded-full hover:bg-zinc-800"><Plus className="w-5 h-5 text-white" /></button>
@@ -859,22 +965,81 @@ export default function App() {
             {friends.length === 0 ? (
               <p className="text-zinc-500 text-sm">No friends yet.</p>
             ) : (
-              <div className="space-y-2">
-                {friends.map(friend => (
-                  <div key={friend.uid} onClick={() => handleStartChat(friend)} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 cursor-pointer hover:bg-zinc-800/50 transition-all">
-                    <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden">
-                      {friend.photoURL ? (
-                        <img src={friend.photoURL} alt={friend.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <UserIcon className="w-5 h-5 text-zinc-500" />
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-white font-medium">{friend.displayName}</p>
-                      <p className="text-zinc-500 text-sm">@{friend.username}</p>
-                    </div>
+              <div className="space-y-6">
+                {pendingFriends.length > 0 && (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">Friend Requests</h3>
+                    {pendingFriends.map(friend => (
+                      <div key={friend.uid} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50">
+                        <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                          {friend.photoURL ? (
+                            <img src={friend.photoURL} alt={friend.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon className="w-6 h-6 text-zinc-500" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-medium truncate">{friend.displayName}</p>
+                          <p className="text-zinc-500 text-sm truncate">@{friend.username}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={() => handleAcceptFriend(friend.relationshipId)} className="p-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded-full transition-colors">
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => handleDeclineFriend(friend.relationshipId)} className="p-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-full transition-colors">
+                            <XIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
+
+                {activeFriends.length > 0 && (
+                  <div className="space-y-2">
+                    {pendingFriends.length > 0 && <h3 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">My Friends</h3>}
+                    {activeFriends.map(friend => (
+                      <div key={friend.uid} onClick={() => handleStartChat(friend)} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 cursor-pointer hover:bg-zinc-800/50 transition-all">
+                        <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                          {friend.photoURL ? (
+                            <img src={friend.photoURL} alt={friend.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon className="w-6 h-6 text-zinc-500" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-medium truncate">{friend.displayName}</p>
+                          <p className="text-zinc-500 text-sm truncate">@{friend.username}</p>
+                        </div>
+                        <button className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-full transition-colors">
+                          <MessageSquare className="w-5 h-5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {sentFriends.length > 0 && (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">Sent Requests</h3>
+                    {sentFriends.map(friend => (
+                      <div key={friend.uid} className="flex items-center gap-3 p-3 bg-zinc-900/50 rounded-xl border border-zinc-800/50 opacity-70">
+                        <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                          {friend.photoURL ? (
+                            <img src={friend.photoURL} alt={friend.username} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon className="w-6 h-6 text-zinc-500" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-medium truncate">{friend.displayName}</p>
+                          <p className="text-zinc-500 text-sm truncate">@{friend.username}</p>
+                        </div>
+                        <span className="text-xs text-zinc-500 bg-zinc-800 px-2 py-1 rounded-full">Pending</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

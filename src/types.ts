@@ -27,9 +27,6 @@ export interface Message {
   senderId: string;
   senderUsername: string;
   text?: string;
-  fileUrl?: string;
-  fileType?: string;
-  fileName?: string;
   createdAt: any;
   isPending?: boolean;
 }

@@ -24,23 +24,14 @@ import {
   writeBatch,
   or
 } from 'firebase/firestore';
-import { 
-  ref, 
-  uploadBytes, 
-  getDownloadURL 
-} from 'firebase/storage';
-import { auth, db, storage } from './firebase';
+import { auth, db } from './firebase';
 import { cn } from './lib/utils';
 import { Message, UserProfile, Chat, FriendProfile } from './types';
 import { 
   ArrowUp, 
-  Image as ImageIcon, 
-  File as FileIcon, 
-  Video as VideoIcon, 
   LogOut, 
   User as UserIcon,
   Loader2,
-  Paperclip,
   X,
   Search,
   Menu,
@@ -63,12 +54,10 @@ export default function App() {
   const [showAddFriendModal, setShowAddFriendModal] = useState(false);
   const [friendUsernameInput, setFriendUsernameInput] = useState('');
   const [inputText, setInputText] = useState('');
-  const [uploading, setUploading] = useState(false);
   const [showUsernameModal, setShowUsernameModal] = useState(false);
   const [usernameInput, setUsernameInput] = useState('');
   const [usernameError, setUsernameError] = useState('');
   const [checkingUsername, setCheckingUsername] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [friends, setFriends] = useState<FriendProfile[]>([]);
   const [chats, setChats] = useState<(Chat & { otherUser?: UserProfile })[]>([]);
@@ -393,21 +382,6 @@ export default function App() {
     await deleteDoc(doc(db, 'friends', relationshipId));
   };
 
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.type.indexOf('image') !== -1 || item.type.indexOf('video') !== -1 || item.kind === 'file') {
-        const file = item.getAsFile();
-        if (file) {
-          setSelectedFile(file);
-          break;
-        }
-      }
-    }
-  };
-
   const pendingChats = chats.filter(c => c.status === 'pending' && c.initiator !== user?.uid);
   const activeChats = chats.filter(c => c.status !== 'pending' || c.initiator === user?.uid);
 
@@ -492,67 +466,37 @@ export default function App() {
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!user || !profile || !activeChatId || (!inputText.trim() && !selectedFile)) return;
+    if (!user || !profile || !activeChatId || !inputText.trim()) return;
 
     const text = inputText.trim();
-    const file = selectedFile;
     const tempId = Date.now().toString();
     
     setInputText('');
-    setSelectedFile(null);
 
     // Optimistic UI update
     const optimisticMessage: Message = {
       id: tempId,
       senderId: user.uid,
       senderUsername: profile.username,
-      text: text || null,
+      text: text,
       createdAt: { toDate: () => new Date() } as any,
-      isPending: true,
-      fileName: file?.name,
-      fileType: file?.type
+      isPending: true
     };
     
     setMessages(prev => [...prev, optimisticMessage]);
 
     try {
-      // Create the message document first so it appears instantly for the sender
-      // (and others, though without the file URL yet)
-      const messageRef = await addDoc(collection(db, 'chats', activeChatId, 'messages'), {
+      await addDoc(collection(db, 'chats', activeChatId, 'messages'), {
         senderId: user.uid,
         senderUsername: profile.username,
-        text: text || null,
-        fileName: file?.name || null,
-        fileType: file?.type || null,
+        text: text,
         createdAt: serverTimestamp()
       });
 
       await setDoc(doc(db, 'chats', activeChatId), {
-        lastMessage: text || (file ? `Sent a ${file.type.split('/')[0]}` : 'Sent an attachment'),
+        lastMessage: text,
         lastMessageTime: serverTimestamp()
       }, { merge: true });
-
-      // If there's a file, upload it in the background and update the message
-      if (file) {
-        setUploading(true);
-        // Fire and forget the upload
-        (async () => {
-          try {
-            const fileRef = ref(storage, `files/${Date.now()}_${file.name}`);
-            await uploadBytes(fileRef, file);
-            const url = await getDownloadURL(fileRef);
-            
-            await setDoc(doc(db, 'chats', activeChatId, 'messages', messageRef.id), {
-              fileUrl: url
-            }, { merge: true });
-          } catch (uploadError) {
-            console.error('Failed to upload file', uploadError);
-            // Optionally update the message to show upload failed
-          } finally {
-            setUploading(false);
-          }
-        })();
-      }
       
     } catch (error) {
       console.error('Failed to send message', error);
@@ -884,7 +828,7 @@ export default function App() {
         )}
 
         {activeTab === 'chats' && activeChatId && (
-          <div className="max-w-3xl mx-auto w-full flex flex-col h-full relative" onPaste={handlePaste}>
+          <div className="max-w-3xl mx-auto w-full flex flex-col h-full relative">
             <div className="flex items-center gap-3 mb-4 pb-4 border-b border-zinc-800/50 flex-shrink-0">
               <button onClick={() => { setActiveChatId(null); setActiveChatUser(null); }} className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400">
                 <ArrowUp className="w-5 h-5 -rotate-90" />
@@ -906,19 +850,6 @@ export default function App() {
               {messages.map(msg => (
                 <div key={msg.id} className={cn("flex flex-col max-w-[80%]", msg.senderId === user.uid ? "ml-auto items-end" : "mr-auto items-start")}>
                   <div className={cn("p-3 rounded-2xl", msg.senderId === user.uid ? "bg-white text-black rounded-br-sm" : "bg-zinc-900 text-white rounded-bl-sm border border-zinc-800")}>
-                    {msg.fileUrl && (
-                      <div className="mb-2">
-                        {msg.fileType?.startsWith('image/') ? (
-                          <img src={msg.fileUrl} alt="attachment" className="rounded-lg max-w-full" />
-                        ) : msg.fileType?.startsWith('video/') ? (
-                          <video src={msg.fileUrl} controls className="rounded-lg max-w-full" />
-                        ) : (
-                          <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-blue-400 underline">
-                            <FileIcon className="w-4 h-4" /> {msg.fileName}
-                          </a>
-                        )}
-                      </div>
-                    )}
                     {msg.text && <p>{msg.text}</p>}
                   </div>
                   <span className="text-[10px] text-zinc-600 mt-1">
@@ -930,27 +861,17 @@ export default function App() {
 
             <div className="flex-shrink-0 pt-2 pb-2">
               <form onSubmit={handleSendMessage} className="flex items-end gap-2 bg-zinc-900/80 backdrop-blur-md p-2 rounded-full border border-zinc-800/50 shadow-xl">
-                <input type="file" id="file-upload" className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
-                <label htmlFor="file-upload" className="p-3 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-full cursor-pointer transition-all flex-shrink-0">
-                  <Paperclip className="w-5 h-5" />
-                </label>
                 <div className="flex-1 relative flex items-center">
-                  {selectedFile && (
-                    <div className="absolute bottom-full left-0 mb-4 p-2 bg-zinc-800 rounded-xl text-xs text-white flex items-center gap-2 shadow-lg border border-zinc-700">
-                      <span className="truncate max-w-[150px]">{selectedFile.name}</span>
-                      <button type="button" onClick={() => setSelectedFile(null)} className="hover:bg-zinc-700 p-1 rounded-full"><X className="w-3 h-3" /></button>
-                    </div>
-                  )}
                   <input 
                     type="text" 
-                    placeholder="Message... (Paste files here)" 
+                    placeholder="Message..." 
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
-                    className="w-full bg-transparent text-white py-3 px-2 outline-none"
+                    className="w-full bg-transparent text-white py-3 px-4 outline-none"
                   />
                 </div>
-                <button type="submit" disabled={(!inputText.trim() && !selectedFile) || uploading} className="p-3 bg-white text-black rounded-full hover:bg-zinc-200 disabled:opacity-50 transition-all flex-shrink-0">
-                  {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowUp className="w-5 h-5" />}
+                <button type="submit" disabled={!inputText.trim()} className="p-3 bg-white text-black rounded-full hover:bg-zinc-200 disabled:opacity-50 transition-all flex-shrink-0">
+                  <ArrowUp className="w-5 h-5" />
                 </button>
               </form>
             </div>

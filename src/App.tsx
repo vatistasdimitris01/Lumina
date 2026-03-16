@@ -69,6 +69,8 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [friends, setFriends] = useState<UserProfile[]>([]);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [editUsernameInput, setEditUsernameInput] = useState('');
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -207,6 +209,55 @@ export default function App() {
       setShowUsernameModal(false);
     } catch (error: any) {
       setUsernameError(error.message || 'Failed to set username');
+    } finally {
+      setCheckingUsername(false);
+    }
+  };
+
+  const handleChangeUsername = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !profile) return;
+    
+    const cleanUsername = editUsernameInput.trim().toLowerCase();
+    if (cleanUsername === profile.username) {
+      setShowProfileModal(false);
+      return;
+    }
+
+    if (cleanUsername.length < 3) {
+      setUsernameError('Username must be at least 3 characters');
+      return;
+    }
+    if (!/^[a-z0-9_]+$/.test(cleanUsername)) {
+      setUsernameError('Only letters, numbers, and underscores allowed');
+      return;
+    }
+
+    setCheckingUsername(true);
+    setUsernameError('');
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const newUsernameDocRef = doc(db, 'usernames', cleanUsername);
+        const newUsernameDoc = await transaction.get(newUsernameDocRef);
+        
+        if (newUsernameDoc.exists()) {
+          throw new Error('Username already taken');
+        }
+
+        const oldUsernameDocRef = doc(db, 'usernames', profile.username);
+
+        const userProfileRef = doc(db, 'users', user.uid);
+        
+        transaction.set(newUsernameDocRef, { uid: user.uid });
+        transaction.delete(oldUsernameDocRef);
+        transaction.update(userProfileRef, { username: cleanUsername });
+        
+        setProfile({ ...profile, username: cleanUsername });
+      });
+      setShowProfileModal(false);
+    } catch (error: any) {
+      setUsernameError(error.message || 'Failed to change username');
     } finally {
       setCheckingUsername(false);
     }
@@ -421,13 +472,60 @@ export default function App() {
 
         <div className="flex items-center gap-4 min-w-[40px] justify-end">
           <button 
-            onClick={handleLogout}
+            onClick={() => {
+              setEditUsernameInput(profile?.username || '');
+              setShowProfileModal(true);
+            }}
             className="p-2 hover:bg-zinc-800 rounded-full transition-all text-zinc-400"
           >
-            <LogOut className="w-5 h-5" />
+            <UserIcon className="w-5 h-5" />
           </button>
         </div>
       </header>
+
+      {/* Profile Modal */}
+      <AnimatePresence>
+        {showProfileModal && (
+          <>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowProfileModal(false)} className="fixed inset-0 bg-black/50 z-50" />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800 w-full max-w-sm">
+                <h2 className="text-white text-lg font-medium mb-4">Profile</h2>
+                <form onSubmit={handleChangeUsername} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-400 mb-1">Username</label>
+                    <input 
+                      type="text" 
+                      placeholder="@username" 
+                      className="w-full p-3 bg-black rounded-xl text-white" 
+                      value={editUsernameInput}
+                      onChange={(e) => setEditUsernameInput(e.target.value)}
+                      disabled={checkingUsername}
+                    />
+                    {usernameError && <p className="text-red-400 text-sm mt-1">{usernameError}</p>}
+                  </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button type="button" onClick={() => setShowProfileModal(false)} className="px-4 py-2 text-zinc-400">Cancel</button>
+                    <button type="submit" disabled={checkingUsername} className="px-4 py-2 bg-white text-black rounded-lg disabled:opacity-50">
+                      {checkingUsername ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+                    </button>
+                  </div>
+                </form>
+                
+                <div className="mt-6 pt-6 border-t border-zinc-800">
+                  <button 
+                    onClick={handleLogout}
+                    className="w-full py-3 flex items-center justify-center gap-2 text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Log Out</span>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Content Area */}
       <main className="flex-1 overflow-y-auto p-4 pb-24">

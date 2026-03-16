@@ -1,0 +1,5 @@
+{
+  "name": "Lumina",
+  "description": "A minimalist, glass-morphism inspired file and message sharing platform with unique usernames and Google authentication.",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - uid: string (required)
+    //   - username: string (required, unique)
+    //   - displayName: string
+    //   - photoURL: string
+    //   - createdAt: timestamp
+    //
+    // Collection: usernames
+    // Fields:
+    //   - uid: string
+    //
+    // Collection: messages
+    // Fields:
+    //   - senderId: string
+    //   - senderUsername: string
+    //   - text: string (optional)
+    //   - fileUrl: string (optional)
+    //   - fileType: string (optional)
+    //   - fileName: string (optional)
+    //   - createdAt: timestamp
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidUsername(username) {
+      return username is string && username.size() >= 3 && username.size() <= 20 && username.matches("^[a-zA-Z0-9_]+$");
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'username', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidUsername(data.username);
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderId', 'senderUsername', 'createdAt']) &&
+             data.senderId == request.auth.uid &&
+             (data.text is string || data.fileUrl is string);
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.username == resource.data.username;
+    }
+
+    match /usernames/{username} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidUsername(username) && request.resource.data.uid == request.auth.uid;
+    }
+
+    match /messages/{messageId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidMessage(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+    }
+  }
+}
